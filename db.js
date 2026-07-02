@@ -83,41 +83,15 @@ const User = mongoose.model('User', UserSchema);
 const Expense = mongoose.model('Expense', ExpenseSchema);
 const AuditLog = mongoose.model('AuditLog', AuditLogSchema);
 
-// Run migration query to set default category and capitalize existing categories
+// Run migration query to set default category for any existing expense missing the field
 async function migrateCategories() {
   try {
-    // 1. Set default for missing
     const missingRes = await Expense.updateMany(
       { categoria: { $exists: false } },
       { $set: { categoria: 'Otros gastos' } }
     );
     if (missingRes.modifiedCount > 0) {
       console.log(`Data migration: Set default category 'Otros gastos' for ${missingRes.modifiedCount} expenses.`);
-    }
-
-    // 2. Map existing lowercase categories to capitalized
-    const mapping = {
-      'servicios publicos': 'Servicios publicos',
-      'internet y telefonia': 'Internet y telefonia',
-      'vehiculo y mantenimiento': 'Vehiculo y mantenimiento',
-      'mercado y alimentacion': 'Mercado y alimentacion',
-      'meriendas': 'Meriendas',
-      'salud y medicamentos': 'Salud y medicamentos',
-      'ropa y calzado': 'Ropa y calzado',
-      'educacion': 'Educacion',
-      'creditos': 'Creditos',
-      'suscripciones IA': 'Suscripciones IA',
-      'artefactos de hogar': 'Articulos y artefactos del hogar',
-      'Artefactos de hogar': 'Articulos y artefactos del hogar',
-      'entretenimiento y salidas': 'Entretenimiento y salidas',
-      'otros gastos': 'Otros gastos'
-    };
-
-    for (const [oldCat, newCat] of Object.entries(mapping)) {
-      const res = await Expense.updateMany({ categoria: oldCat }, { $set: { categoria: newCat } });
-      if (res.modifiedCount > 0) {
-        console.log(`Data migration: Updated category '${oldCat}' to '${newCat}' for ${res.modifiedCount} expenses.`);
-      }
     }
   } catch (err) {
     console.error('Error migrating expense categories:', err);
