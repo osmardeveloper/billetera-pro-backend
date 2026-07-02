@@ -7,8 +7,14 @@ const app = express();
 const PORT = process.env.PORT || 5001;
 const JWT_SECRET = 'BilleteraProSuperSecretKey_2026';
 
+const allowedOrigins = [
+  'http://localhost:5173',
+  'https://billeterapro.netlify.app',
+  process.env.FRONTEND_URL
+].filter(Boolean);
+
 app.use(cors({
-  origin: 'http://localhost:5173', // Vite client port
+  origin: allowedOrigins,
   credentials: true
 }));
 app.use(express.json());
