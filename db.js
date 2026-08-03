@@ -78,9 +78,24 @@ const AuditLogSchema = new mongoose.Schema({
   toJSON: { virtuals: true },
   toObject: { virtuals: true }
 });
+// Income Schema
+const IncomeSchema = new mongoose.Schema({
+  amount: { type: Number, required: true },
+  method: { type: String, enum: ['efectivo', 'nequi', 'bancolombia'], required: true, lowercase: true },
+  date: { type: String, required: true }, // Format YYYY-MM-DD
+  description: { type: String, default: '' },
+  ownerCode: { type: String, required: true, uppercase: true },
+  ownerName: { type: String, required: true },
+  registeredBy: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
+}, {
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
+});
 
 const User = mongoose.model('User', UserSchema);
 const Expense = mongoose.model('Expense', ExpenseSchema);
+const Income = mongoose.model('Income', IncomeSchema);
 const AuditLog = mongoose.model('AuditLog', AuditLogSchema);
 
 // Run migration query to set default category for any existing expense missing the field
@@ -103,6 +118,7 @@ migrateCategories();
 module.exports = {
   User,
   Expense,
+  Income,
   AuditLog,
   hashPassword: (password) => {
     const salt = bcrypt.genSaltSync(10);

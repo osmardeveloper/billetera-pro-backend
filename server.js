@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
-const { User, Expense, AuditLog, hashPassword, comparePassword } = require('./db');
+const { User, Expense, Income, AuditLog, hashPassword, comparePassword } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -22,18 +22,33 @@ app.use(express.json());
 // --- MIDDLEWARES ---
 
 // Authenticate JWT Token
+const fs = require('fs');
+function logDebug(message) {
+  try {
+    fs.appendFileSync('/Users/macbook/Documents/billetera_pro_js/backend/debug.log', `[${new Date().toISOString()}] ${message}\n`);
+  } catch (e) {
+    console.error('Debug log write failed:', e);
+  }
+}
+
+// Authenticate JWT Token
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1]; // Bearer <token>
   
+  logDebug(`Auth request to ${req.method} ${req.url} - Header: ${authHeader ? 'Exists' : 'Missing'}`);
+
   if (!token) {
+    logDebug('Auth failed: No token provided');
     return res.status(401).json({ error: 'Acceso denegado. Token no proporcionado.' });
   }
 
   jwt.verify(token, JWT_SECRET, (err, decodedUser) => {
     if (err) {
+      logDebug(`Auth failed: jwt.verify error: ${err.message}`);
       return res.status(403).json({ error: 'Token no válido o expirado.' });
     }
+    logDebug(`Auth success: Decoded user = ${JSON.stringify(decodedUser)}`);
     req.user = decodedUser;
     next();
   });
@@ -41,9 +56,12 @@ function authenticateToken(req, res, next) {
 
 // Require Admin Role
 function requireAdmin(req, res, next) {
+  logDebug(`requireAdmin check: req.user = ${JSON.stringify(req.user)}`);
   if (!req.user || req.user.role !== 'admin') {
+    logDebug(`requireAdmin failed: user role is ${req.user ? req.user.role : 'undefined'}`);
     return res.status(403).json({ error: 'Acceso denegado. Requiere rol de administrador.' });
   }
+  logDebug('requireAdmin success');
   next();
 }
 
@@ -243,22 +261,24 @@ app.delete('/api/users/:id', authenticateToken, requireAdmin, requireMasterKey, 
 
     await User.findByIdAndDelete(id);
 
-    // Cascade delete user's expenses (matching ownerCode to deletedUser's code)
-    const deleteResult = await Expense.deleteMany({ ownerCode: user.code });
-    const deletedCount = deleteResult.deletedCount;
+    // Cascade delete user's expenses and incomes (matching ownerCode to deletedUser's code)
+    const deleteExpensesRes = await Expense.deleteMany({ ownerCode: user.code });
+    const deleteIncomesRes = await Income.deleteMany({ ownerCode: user.code });
+    const deletedCount = deleteExpensesRes.deletedCount;
+    const deletedIncomesCount = deleteIncomesRes.deletedCount;
 
     // Log user deletion in Audit Logs
     const newLog = new AuditLog({
       type: 'Usuario',
       action: 'Eliminación',
       targetId: user._id.toString(),
-      targetDetails: `Nombre: ${user.name}, Usuario: ${user.username}, Código: ${user.code} (Se eliminaron ${deletedCount} gastos asociados en cascada)`,
+      targetDetails: `Nombre: ${user.name}, Usuario: ${user.username}, Código: ${user.code} (Se eliminaron ${deletedCount} gastos y ${deletedIncomesCount} ingresos asociados en cascada)`,
       deletedBy: req.user.username,
       reason: reason
     });
     await newLog.save();
 
-    res.json({ message: `Usuario "${user.name}" y sus ${deletedCount} gastos asociados fueron eliminados exitosamente.` });
+    res.json({ message: `Usuario "${user.name}", sus ${deletedCount} gastos y ${deletedIncomesCount} ingresos asociados fueron eliminados exitosamente.` });
   } catch (err) {
     console.error('Error deleting user:', err);
     res.status(500).json({ error: 'Error al eliminar el usuario y sus gastos.' });
@@ -360,6 +380,56 @@ app.post('/api/expenses', authenticateToken, async (req, res) => {
   }
 });
 
+// Register multiple expenses in bulk
+app.post('/api/expenses/bulk', authenticateToken, async (req, res) => {
+  const expensesData = req.body;
+  logDebug(`Bulk insert requested with ${Array.isArray(expensesData) ? expensesData.length : 0} items`);
+
+  if (!Array.isArray(expensesData) || expensesData.length === 0) {
+    return res.status(400).json({ error: 'Debe proporcionar un listado de gastos válido.' });
+  }
+
+  const validMethods = ['efectivo', 'nequi', 'bancolombia'];
+  
+  // Validate all items
+  for (let i = 0; i < expensesData.length; i++) {
+    const { amount, method, date } = expensesData[i];
+    if (amount === undefined || !method || !date) {
+      return res.status(400).json({ error: `Fila ${i + 1}: Los campos monto, método y fecha son obligatorios.` });
+    }
+    if (!validMethods.includes(method.toLowerCase())) {
+      return res.status(400).json({ error: `Fila ${i + 1}: Método de pago no válido.` });
+    }
+    if (isNaN(amount) || Number(amount) <= 0) {
+      return res.status(400).json({ error: `Fila ${i + 1}: El monto debe ser un número positivo.` });
+    }
+  }
+
+  try {
+    const finalOwnerCode = req.user.code;
+    const ownerUser = await User.findOne({ code: finalOwnerCode.toUpperCase() });
+    const ownerName = ownerUser ? ownerUser.name : 'Desconocido';
+
+    const expensesToSave = expensesData.map(item => new Expense({
+      amount: Number(item.amount),
+      method: item.method.toLowerCase(),
+      date: item.date,
+      description: item.description || '',
+      categoria: item.categoria || 'Otros gastos',
+      ownerCode: finalOwnerCode.toUpperCase(),
+      ownerName,
+      registeredBy: req.user.username
+    }));
+
+    const savedExpenses = await Expense.insertMany(expensesToSave);
+    logDebug(`Bulk insert success: ${savedExpenses.length} items saved.`);
+    res.status(201).json(savedExpenses);
+  } catch (err) {
+    console.error('Error creating bulk expenses:', err);
+    res.status(500).json({ error: 'Error al registrar el listado de gastos.' });
+  }
+});
+
 // Edit expense (Admin or Owner)
 app.put('/api/expenses/:id', authenticateToken, async (req, res) => {
   const { id } = req.params;
@@ -452,6 +522,230 @@ app.delete('/api/expenses/:id', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error('Error deleting expense:', err);
     res.status(500).json({ error: 'Error al eliminar el gasto.' });
+  }
+});
+
+// --- INCOMES ROUTES ---
+
+// Get incomes (with filtering and auth logic)
+app.get('/api/incomes', authenticateToken, async (req, res) => {
+  const { startDate, endDate, methods, ownerCode } = req.query;
+  const query = {};
+
+  try {
+    // 1. Role-based scoping
+    if (req.user.role !== 'admin') {
+      // Non-admin can only see their own incomes
+      query.ownerCode = req.user.code;
+    } else if (ownerCode) {
+      // Admin can optionally filter by a specific owner code
+      query.ownerCode = ownerCode.toUpperCase();
+    }
+
+    // 2. Filter by Date Range
+    if (startDate && endDate) {
+      query.date = { $gte: startDate, $lte: endDate };
+    } else if (startDate) {
+      query.date = { $gte: startDate };
+    } else if (endDate) {
+      query.date = { $lte: endDate };
+    }
+
+    // 3. Filter by Payment Methods
+    if (methods) {
+      const methodsList = methods.split(',').map(m => m.trim().toLowerCase());
+      if (methodsList.length > 0 && methodsList[0] !== '') {
+        query.method = { $in: methodsList };
+      }
+    }
+
+    // Find and sort by date descending
+    const incomes = await Income.find(query).sort({ date: -1 });
+    res.json(incomes);
+  } catch (err) {
+    console.error('Error fetching incomes:', err);
+    res.status(500).json({ error: 'Error al consultar el listado de ingresos.' });
+  }
+});
+
+// Register a new income
+app.post('/api/incomes', authenticateToken, async (req, res) => {
+  const { amount, method, date, description } = req.body;
+
+  if (amount === undefined || !method || !date) {
+    return res.status(400).json({ error: 'Los campos monto, método y fecha son obligatorios.' });
+  }
+
+  const validMethods = ['efectivo', 'nequi', 'bancolombia'];
+  if (!validMethods.includes(method.toLowerCase())) {
+    return res.status(400).json({ error: 'Método de pago no válido. Debe ser efectivo, nequi o bancolombia.' });
+  }
+
+  if (isNaN(amount) || Number(amount) <= 0) {
+    return res.status(400).json({ error: 'El monto debe ser un número positivo.' });
+  }
+
+  try {
+    const finalOwnerCode = req.user.code;
+
+    // Find user details to attach owner name
+    const ownerUser = await User.findOne({ code: finalOwnerCode.toUpperCase() });
+    const ownerName = ownerUser ? ownerUser.name : 'Desconocido';
+
+    const newIncome = new Income({
+      amount: Number(amount),
+      method: method.toLowerCase(),
+      date,
+      description: description || '',
+      ownerCode: finalOwnerCode.toUpperCase(),
+      ownerName,
+      registeredBy: req.user.username
+    });
+
+    await newIncome.save();
+    res.status(201).json(newIncome);
+  } catch (err) {
+    console.error('Error creating income:', err);
+    res.status(500).json({ error: 'Error al registrar el ingreso.' });
+  }
+});
+
+// Register multiple incomes in bulk
+app.post('/api/incomes/bulk', authenticateToken, async (req, res) => {
+  const incomesData = req.body;
+  logDebug(`Bulk insert incomes requested with ${Array.isArray(incomesData) ? incomesData.length : 0} items`);
+
+  if (!Array.isArray(incomesData) || incomesData.length === 0) {
+    return res.status(400).json({ error: 'Debe proporcionar un listado de ingresos válido.' });
+  }
+
+  const validMethods = ['efectivo', 'nequi', 'bancolombia'];
+  
+  // Validate all items
+  for (let i = 0; i < incomesData.length; i++) {
+    const { amount, method, date } = incomesData[i];
+    if (amount === undefined || !method || !date) {
+      return res.status(400).json({ error: `Fila ${i + 1}: Los campos monto, método y fecha son obligatorios.` });
+    }
+    if (!validMethods.includes(method.toLowerCase())) {
+      return res.status(400).json({ error: `Fila ${i + 1}: Método de pago no válido.` });
+    }
+    if (isNaN(amount) || Number(amount) <= 0) {
+      return res.status(400).json({ error: `Fila ${i + 1}: El monto debe ser un número positivo.` });
+    }
+  }
+
+  try {
+    const finalOwnerCode = req.user.code;
+    const ownerUser = await User.findOne({ code: finalOwnerCode.toUpperCase() });
+    const ownerName = ownerUser ? ownerUser.name : 'Desconocido';
+
+    const incomesToSave = incomesData.map(item => new Income({
+      amount: Number(item.amount),
+      method: item.method.toLowerCase(),
+      date: item.date,
+      description: item.description || '',
+      ownerCode: finalOwnerCode.toUpperCase(),
+      ownerName,
+      registeredBy: req.user.username
+    }));
+
+    const savedIncomes = await Income.insertMany(incomesToSave);
+    logDebug(`Bulk insert incomes success: ${savedIncomes.length} items saved.`);
+    res.status(201).json(savedIncomes);
+  } catch (err) {
+    console.error('Error creating bulk incomes:', err);
+    res.status(500).json({ error: 'Error al registrar el listado de ingresos.' });
+  }
+});
+
+// Edit income (Admin or Owner)
+app.put('/api/incomes/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { amount, method, date, description } = req.body;
+
+  if (amount === undefined) {
+    return res.status(400).json({ error: 'El campo monto es obligatorio.' });
+  }
+
+  if (isNaN(amount) || Number(amount) <= 0) {
+    return res.status(400).json({ error: 'El monto debe ser un número positivo.' });
+  }
+
+  try {
+    const income = await Income.findById(id);
+    if (!income) {
+      return res.status(404).json({ error: 'Ingreso no encontrado.' });
+    }
+
+    // Authorization: User must be an admin OR the owner of the income
+    if (req.user.role !== 'admin' && income.ownerCode !== req.user.code) {
+      return res.status(403).json({ error: 'Acceso denegado. No tiene permisos para editar este ingreso.' });
+    }
+
+    income.amount = Number(amount);
+    
+    if (method) {
+      const validMethods = ['efectivo', 'nequi', 'bancolombia'];
+      if (!validMethods.includes(method.toLowerCase())) {
+        return res.status(400).json({ error: 'Método de pago no válido.' });
+      }
+      income.method = method.toLowerCase();
+    }
+    
+    if (date) {
+      income.date = date;
+    }
+    
+    if (description !== undefined) {
+      income.description = description;
+    }
+
+    await income.save();
+    res.json(income);
+  } catch (err) {
+    console.error('Error updating income:', err);
+    res.status(500).json({ error: 'Error al actualizar el ingreso.' });
+  }
+});
+
+// Delete income (Admin or Owner)
+app.delete('/api/incomes/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const reason = req.headers['x-delete-reason'];
+
+  if (!reason || reason.trim() === '') {
+    return res.status(400).json({ error: 'El motivo de la eliminación es obligatorio.' });
+  }
+
+  try {
+    const income = await Income.findById(id);
+    if (!income) {
+      return res.status(404).json({ error: 'Ingreso no encontrado.' });
+    }
+
+    // Authorization: User must be an admin OR the owner of the income
+    if (req.user.role !== 'admin' && income.ownerCode !== req.user.code) {
+      return res.status(403).json({ error: 'Acceso denegado. No tiene permisos para eliminar este ingreso.' });
+    }
+
+    await Income.findByIdAndDelete(id);
+
+    // Log income deletion in Audit Logs
+    const newLog = new AuditLog({
+      type: 'Ingreso',
+      action: 'Eliminación',
+      targetId: income._id.toString(),
+      targetDetails: `Monto: $${income.amount}, Método: ${income.method}, Fecha: ${income.date}, Propietario: ${income.ownerName} (${income.ownerCode})`,
+      deletedBy: req.user.username,
+      reason: reason
+    });
+    await newLog.save();
+
+    res.json({ message: 'Ingreso eliminado exitosamente.', income });
+  } catch (err) {
+    console.error('Error deleting income:', err);
+    res.status(500).json({ error: 'Error al eliminar el ingreso.' });
   }
 });
 
