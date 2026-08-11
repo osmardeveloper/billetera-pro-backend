@@ -122,8 +122,9 @@ const ScheduledDebtSchema = new mongoose.Schema({
   nombre: { type: String, required: true },
   monto: { type: Number, required: true },
   tiempoCantidad: { type: Number, required: true },
-  tiempoUnidad: { type: String, enum: ['meses', 'años'], required: true },
+  tiempoUnidad: { type: String, enum: ['meses', 'años', 'quincenas', 'semanas'], required: true },
   periodo: { type: String, enum: ['semanal', 'quincenal', 'mensual'], required: true },
+
   numeroCuotas: { type: Number, required: true },
   montoCuotas: { type: Number, required: true },
   progreso: { type: Number, default: 0 },

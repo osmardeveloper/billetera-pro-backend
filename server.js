@@ -758,10 +758,18 @@ function calculateGoalCuotas(monto, tiempoCantidad, tiempoUnidad, periodo) {
     if (periodo === 'semanal') numeroCuotas = tiempoCantidad * 52;
     else if (periodo === 'quincenal') numeroCuotas = tiempoCantidad * 24;
     else numeroCuotas = tiempoCantidad * 12; // mensual
-  } else { // meses
+  } else if (tiempoUnidad === 'meses') {
     if (periodo === 'semanal') numeroCuotas = Math.round(tiempoCantidad * 4.3333);
     else if (periodo === 'quincenal') numeroCuotas = tiempoCantidad * 2;
     else numeroCuotas = tiempoCantidad; // mensual
+  } else if (tiempoUnidad === 'quincenas') {
+    if (periodo === 'semanal') numeroCuotas = tiempoCantidad * 2;
+    else if (periodo === 'quincenal') numeroCuotas = tiempoCantidad;
+    else numeroCuotas = Math.round(tiempoCantidad / 2); // mensual
+  } else if (tiempoUnidad === 'semanas') {
+    if (periodo === 'semanal') numeroCuotas = tiempoCantidad;
+    else if (periodo === 'quincenal') numeroCuotas = Math.round(tiempoCantidad / 2);
+    else numeroCuotas = Math.round(tiempoCantidad / 4.3333); // mensual
   }
   
   // Ensure at least 1 installment
@@ -1028,9 +1036,9 @@ app.post('/api/debts', authenticateToken, async (req, res) => {
     return res.status(400).json({ error: 'El tiempo debe ser un número positivo.' });
   }
   
-  const validUnits = ['meses', 'años'];
+  const validUnits = ['meses', 'años', 'quincenas', 'semanas'];
   if (!validUnits.includes(tiempoUnidad)) {
-    return res.status(400).json({ error: 'Unidad de tiempo no válida. Debe ser meses o años.' });
+    return res.status(400).json({ error: 'Unidad de tiempo no válida. Debe ser meses, años, quincenas o semanas.' });
   }
   
   const validPeriods = ['semanal', 'quincenal', 'mensual'];
