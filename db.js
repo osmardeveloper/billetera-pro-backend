@@ -93,10 +93,60 @@ const IncomeSchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
+// SavingsGoal Schema
+const SavingsGoalSchema = new mongoose.Schema({
+  nombre: { type: String, required: true },
+  monto: { type: Number, required: true },
+  tiempoCantidad: { type: Number, required: true },
+  tiempoUnidad: { type: String, enum: ['meses', 'años'], required: true },
+  periodo: { type: String, enum: ['semanal', 'quincenal', 'mensual'], required: true },
+  numeroCuotas: { type: Number, required: true },
+  montoCuotas: { type: Number, required: true },
+  progreso: { type: Number, default: 0 },
+  completed: { type: Boolean, default: false },
+  cuotas: [{
+    fecha: { type: String, required: true },
+    monto: { type: Number, required: true },
+    leyenda: { type: String, default: '' }
+  }],
+  ownerCode: { type: String, required: true, uppercase: true },
+  ownerName: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
+}, {
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
+});
+
+// ScheduledDebt Schema
+const ScheduledDebtSchema = new mongoose.Schema({
+  nombre: { type: String, required: true },
+  monto: { type: Number, required: true },
+  tiempoCantidad: { type: Number, required: true },
+  tiempoUnidad: { type: String, enum: ['meses', 'años'], required: true },
+  periodo: { type: String, enum: ['semanal', 'quincenal', 'mensual'], required: true },
+  numeroCuotas: { type: Number, required: true },
+  montoCuotas: { type: Number, required: true },
+  progreso: { type: Number, default: 0 },
+  completed: { type: Boolean, default: false },
+  cuotas: [{
+    fecha: { type: String, required: true },
+    monto: { type: Number, required: true },
+    leyenda: { type: String, default: '' }
+  }],
+  ownerCode: { type: String, required: true, uppercase: true },
+  ownerName: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now }
+}, {
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
+});
+
 const User = mongoose.model('User', UserSchema);
 const Expense = mongoose.model('Expense', ExpenseSchema);
 const Income = mongoose.model('Income', IncomeSchema);
 const AuditLog = mongoose.model('AuditLog', AuditLogSchema);
+const SavingsGoal = mongoose.model('SavingsGoal', SavingsGoalSchema);
+const ScheduledDebt = mongoose.model('ScheduledDebt', ScheduledDebtSchema);
 
 // Run migration query to set default category for any existing expense missing the field
 async function migrateCategories() {
@@ -120,6 +170,8 @@ module.exports = {
   Expense,
   Income,
   AuditLog,
+  SavingsGoal,
+  ScheduledDebt,
   hashPassword: (password) => {
     const salt = bcrypt.genSaltSync(10);
     return bcrypt.hashSync(password, salt);

@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
-const { User, Expense, Income, AuditLog, hashPassword, comparePassword } = require('./db');
+const { User, Expense, Income, AuditLog, SavingsGoal, ScheduledDebt, hashPassword, comparePassword } = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -746,6 +746,471 @@ app.delete('/api/incomes/:id', authenticateToken, async (req, res) => {
   } catch (err) {
     console.error('Error deleting income:', err);
     res.status(500).json({ error: 'Error al eliminar el ingreso.' });
+  }
+});
+
+// --- SAVINGS GOALS ROUTES ---
+
+// Helper function to calculate installments/cuotas
+function calculateGoalCuotas(monto, tiempoCantidad, tiempoUnidad, periodo) {
+  let numeroCuotas = 0;
+  if (tiempoUnidad === 'años') {
+    if (periodo === 'semanal') numeroCuotas = tiempoCantidad * 52;
+    else if (periodo === 'quincenal') numeroCuotas = tiempoCantidad * 24;
+    else numeroCuotas = tiempoCantidad * 12; // mensual
+  } else { // meses
+    if (periodo === 'semanal') numeroCuotas = Math.round(tiempoCantidad * 4.3333);
+    else if (periodo === 'quincenal') numeroCuotas = tiempoCantidad * 2;
+    else numeroCuotas = tiempoCantidad; // mensual
+  }
+  
+  // Ensure at least 1 installment
+  if (numeroCuotas <= 0) numeroCuotas = 1;
+  const montoCuotas = Math.round(monto / numeroCuotas);
+  return { numeroCuotas, montoCuotas };
+}
+
+// Get savings goals
+app.get('/api/goals', authenticateToken, async (req, res) => {
+  const { ownerCode } = req.query;
+  const query = {};
+  
+  try {
+    if (req.user.role !== 'admin') {
+      query.ownerCode = req.user.code;
+    } else if (ownerCode) {
+      query.ownerCode = ownerCode.toUpperCase();
+    }
+    
+    const goals = await SavingsGoal.find(query).sort({ createdAt: -1 });
+    res.json(goals);
+  } catch (err) {
+    console.error('Error fetching savings goals:', err);
+    res.status(500).json({ error: 'Error al obtener el listado de metas de ahorro.' });
+  }
+});
+
+// Create savings goal
+app.post('/api/goals', authenticateToken, async (req, res) => {
+  const { nombre, monto, tiempoCantidad, tiempoUnidad, periodo } = req.body;
+  
+  if (!nombre || monto === undefined || tiempoCantidad === undefined || !tiempoUnidad || !periodo) {
+    return res.status(400).json({ error: 'Todos los campos son obligatorios.' });
+  }
+  
+  if (isNaN(monto) || Number(monto) <= 0) {
+    return res.status(400).json({ error: 'El monto debe ser un número positivo.' });
+  }
+  if (isNaN(tiempoCantidad) || Number(tiempoCantidad) <= 0) {
+    return res.status(400).json({ error: 'El tiempo debe ser un número positivo.' });
+  }
+  
+  const validUnits = ['meses', 'años'];
+  if (!validUnits.includes(tiempoUnidad)) {
+    return res.status(400).json({ error: 'Unidad de tiempo no válida. Debe ser meses o años.' });
+  }
+  
+  const validPeriods = ['semanal', 'quincenal', 'mensual'];
+  if (!validPeriods.includes(periodo)) {
+    return res.status(400).json({ error: 'Período no válido. Debe ser semanal, quincenal o mensual.' });
+  }
+  
+  try {
+    const { numeroCuotas, montoCuotas } = calculateGoalCuotas(Number(monto), Number(tiempoCantidad), tiempoUnidad, periodo);
+    
+    // Find the user's name
+    const ownerUser = await User.findOne({ code: req.user.code.toUpperCase() });
+    const ownerName = ownerUser ? ownerUser.name : 'Desconocido';
+    
+    const newGoal = new SavingsGoal({
+      nombre,
+      monto: Number(monto),
+      tiempoCantidad: Number(tiempoCantidad),
+      tiempoUnidad,
+      periodo,
+      numeroCuotas,
+      montoCuotas,
+      ownerCode: req.user.code.toUpperCase(),
+      ownerName
+    });
+    
+    await newGoal.save();
+    res.status(201).json(newGoal);
+  } catch (err) {
+    console.error('Error creating savings goal:', err);
+    res.status(500).json({ error: 'Error al registrar la meta de ahorro.' });
+  }
+});
+
+// Update savings goal
+app.put('/api/goals/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { nombre, monto, tiempoCantidad, tiempoUnidad, periodo } = req.body;
+  
+  if (!nombre || monto === undefined || tiempoCantidad === undefined || !tiempoUnidad || !periodo) {
+    return res.status(400).json({ error: 'Todos los campos son obligatorios.' });
+  }
+  
+  if (isNaN(monto) || Number(monto) <= 0) {
+    return res.status(400).json({ error: 'El monto debe ser un número positivo.' });
+  }
+  if (isNaN(tiempoCantidad) || Number(tiempoCantidad) <= 0) {
+    return res.status(400).json({ error: 'El tiempo debe ser un número positivo.' });
+  }
+  
+  try {
+    const goal = await SavingsGoal.findById(id);
+    if (!goal) {
+      return res.status(404).json({ error: 'Meta de ahorro no encontrada.' });
+    }
+    
+    // Authorization: User must be admin OR the owner of the goal
+    if (req.user.role !== 'admin' && goal.ownerCode !== req.user.code) {
+      return res.status(403).json({ error: 'Acceso denegado. No tiene permisos para editar esta meta.' });
+    }
+    
+    const { numeroCuotas, montoCuotas } = calculateGoalCuotas(Number(monto), Number(tiempoCantidad), tiempoUnidad, periodo);
+    
+    goal.nombre = nombre;
+    goal.monto = Number(monto);
+    goal.tiempoCantidad = Number(tiempoCantidad);
+    goal.tiempoUnidad = tiempoUnidad;
+    goal.periodo = periodo;
+    goal.numeroCuotas = numeroCuotas;
+    goal.montoCuotas = montoCuotas;
+    
+    // Recalculate completed status if amount changed
+    goal.completed = goal.progreso >= goal.monto;
+    
+    await goal.save();
+    res.json(goal);
+  } catch (err) {
+    console.error('Error updating savings goal:', err);
+    res.status(500).json({ error: 'Error al actualizar la meta de ahorro.' });
+  }
+});
+
+// Delete savings goal
+app.delete('/api/goals/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const reason = req.headers['x-delete-reason'] || 'Meta eliminada por el usuario';
+  
+  try {
+    const goal = await SavingsGoal.findById(id);
+    if (!goal) {
+      return res.status(404).json({ error: 'Meta de ahorro no encontrada.' });
+    }
+    
+    // Authorization: User must be admin OR the owner of the goal
+    if (req.user.role !== 'admin' && goal.ownerCode !== req.user.code) {
+      return res.status(403).json({ error: 'Acceso denegado. No tiene permisos para eliminar esta meta.' });
+    }
+    
+    await SavingsGoal.findByIdAndDelete(id);
+    
+    // Log goal deletion in Audit Logs
+    const newLog = new AuditLog({
+      type: 'Meta Ahorro',
+      action: 'Eliminación',
+      targetId: goal._id.toString(),
+      targetDetails: `Nombre: ${goal.nombre}, Monto: $${goal.monto}, Progreso: $${goal.progreso}, Propietario: ${goal.ownerName} (${goal.ownerCode})`,
+      deletedBy: req.user.username,
+      reason: reason
+    });
+    await newLog.save();
+    
+    res.json({ message: 'Meta de ahorro eliminada exitosamente.' });
+  } catch (err) {
+    console.error('Error deleting savings goal:', err);
+    res.status(500).json({ error: 'Error al eliminar la meta de ahorro.' });
+  }
+});
+
+// Register savings goal cuota/aporte
+app.post('/api/goals/:id/cuotas', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { monto, fecha } = req.body;
+  
+  if (monto === undefined || !fecha) {
+    return res.status(400).json({ error: 'El monto y la fecha del aporte son obligatorios.' });
+  }
+  
+  if (isNaN(monto) || Number(monto) <= 0) {
+    return res.status(400).json({ error: 'El monto debe ser un número positivo.' });
+  }
+  
+  try {
+    const goal = await SavingsGoal.findById(id);
+    if (!goal) {
+      return res.status(404).json({ error: 'Meta de ahorro no encontrada.' });
+    }
+    
+    // Authorization: User must be admin OR the owner of the goal
+    if (req.user.role !== 'admin' && goal.ownerCode !== req.user.code) {
+      return res.status(403).json({ error: 'Acceso denegado. No tiene permisos para registrar cuotas en esta meta.' });
+    }
+    
+    const nuevoProgreso = goal.progreso + Number(monto);
+    goal.progreso = nuevoProgreso;
+    
+    if (nuevoProgreso >= goal.monto) {
+      goal.completed = true;
+    }
+    
+    const rem = goal.monto - nuevoProgreso;
+    const cuotasRestantes = rem > 0 ? Math.ceil(rem / goal.montoCuotas) : 0;
+    
+    // Currency format for COP helper inside backend response
+    const formatCurrencyCOP = (val) => {
+      return new Intl.NumberFormat('es-CO', {
+        style: 'currency',
+        currency: 'COP',
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 0
+      }).format(val);
+    };
+    
+    let leyenda = '';
+    if (goal.completed) {
+      leyenda = '¡Meta cumplida!';
+    } else {
+      leyenda = `Faltan aproximadamente ${cuotasRestantes} cuotas de ${formatCurrencyCOP(goal.montoCuotas)}`;
+    }
+    
+    goal.cuotas.push({
+      fecha,
+      monto: Number(monto),
+      leyenda
+    });
+    
+    await goal.save();
+    res.json(goal);
+  } catch (err) {
+    console.error('Error registering savings goal cuota:', err);
+    res.status(500).json({ error: 'Error al registrar el aporte para la meta.' });
+  }
+});
+
+// --- SCHEDULED DEBTS ROUTES ---
+
+// Get scheduled debts
+app.get('/api/debts', authenticateToken, async (req, res) => {
+  const { ownerCode } = req.query;
+  const query = {};
+  
+  try {
+    if (req.user.role !== 'admin') {
+      query.ownerCode = req.user.code;
+    } else if (ownerCode) {
+      query.ownerCode = ownerCode.toUpperCase();
+    }
+    
+    const debts = await ScheduledDebt.find(query).sort({ createdAt: -1 });
+    res.json(debts);
+  } catch (err) {
+    console.error('Error fetching scheduled debts:', err);
+    res.status(500).json({ error: 'Error al obtener el listado de deudas programadas.' });
+  }
+});
+
+// Create scheduled debt
+app.post('/api/debts', authenticateToken, async (req, res) => {
+  const { nombre, monto, tiempoCantidad, tiempoUnidad, periodo } = req.body;
+  
+  if (!nombre || monto === undefined || tiempoCantidad === undefined || !tiempoUnidad || !periodo) {
+    return res.status(400).json({ error: 'Todos los campos son obligatorios.' });
+  }
+  
+  if (isNaN(monto) || Number(monto) <= 0) {
+    return res.status(400).json({ error: 'El monto debe ser un número positivo.' });
+  }
+  if (isNaN(tiempoCantidad) || Number(tiempoCantidad) <= 0) {
+    return res.status(400).json({ error: 'El tiempo debe ser un número positivo.' });
+  }
+  
+  const validUnits = ['meses', 'años'];
+  if (!validUnits.includes(tiempoUnidad)) {
+    return res.status(400).json({ error: 'Unidad de tiempo no válida. Debe ser meses o años.' });
+  }
+  
+  const validPeriods = ['semanal', 'quincenal', 'mensual'];
+  if (!validPeriods.includes(periodo)) {
+    return res.status(400).json({ error: 'Período no válido. Debe ser semanal, quincenal o mensual.' });
+  }
+  
+  try {
+    const { numeroCuotas, montoCuotas } = calculateGoalCuotas(Number(monto), Number(tiempoCantidad), tiempoUnidad, periodo);
+    
+    // Find the user's name
+    const ownerUser = await User.findOne({ code: req.user.code.toUpperCase() });
+    const ownerName = ownerUser ? ownerUser.name : 'Desconocido';
+    
+    const newDebt = new ScheduledDebt({
+      nombre,
+      monto: Number(monto),
+      tiempoCantidad: Number(tiempoCantidad),
+      tiempoUnidad,
+      periodo,
+      numeroCuotas,
+      montoCuotas,
+      ownerCode: req.user.code.toUpperCase(),
+      ownerName
+    });
+    
+    await newDebt.save();
+    res.status(201).json(newDebt);
+  } catch (err) {
+    console.error('Error creating scheduled debt:', err);
+    res.status(500).json({ error: 'Error al registrar la deuda programada.' });
+  }
+});
+
+// Update scheduled debt
+app.put('/api/debts/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { nombre, monto, tiempoCantidad, tiempoUnidad, periodo } = req.body;
+  
+  if (!nombre || monto === undefined || tiempoCantidad === undefined || !tiempoUnidad || !periodo) {
+    return res.status(400).json({ error: 'Todos los campos son obligatorios.' });
+  }
+  
+  if (isNaN(monto) || Number(monto) <= 0) {
+    return res.status(400).json({ error: 'El monto debe ser un número positivo.' });
+  }
+  if (isNaN(tiempoCantidad) || Number(tiempoCantidad) <= 0) {
+    return res.status(400).json({ error: 'El tiempo debe ser un número positivo.' });
+  }
+  
+  try {
+    const debt = await ScheduledDebt.findById(id);
+    if (!debt) {
+      return res.status(404).json({ error: 'Deuda programada no encontrada.' });
+    }
+    
+    // Authorization: User must be admin OR the owner of the debt
+    if (req.user.role !== 'admin' && debt.ownerCode !== req.user.code) {
+      return res.status(403).json({ error: 'Acceso denegado. No tiene permisos para editar esta deuda.' });
+    }
+    
+    const { numeroCuotas, montoCuotas } = calculateGoalCuotas(Number(monto), Number(tiempoCantidad), tiempoUnidad, periodo);
+    
+    debt.nombre = nombre;
+    debt.monto = Number(monto);
+    debt.tiempoCantidad = Number(tiempoCantidad);
+    debt.tiempoUnidad = tiempoUnidad;
+    debt.periodo = periodo;
+    debt.numeroCuotas = numeroCuotas;
+    debt.montoCuotas = montoCuotas;
+    
+    // Recalculate completed status if amount changed
+    debt.completed = debt.progreso >= debt.monto;
+    
+    await debt.save();
+    res.json(debt);
+  } catch (err) {
+    console.error('Error updating scheduled debt:', err);
+    res.status(500).json({ error: 'Error al actualizar la deuda programada.' });
+  }
+});
+
+// Delete scheduled debt
+app.delete('/api/debts/:id', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const reason = req.headers['x-delete-reason'] || 'Deuda eliminada por el usuario';
+  
+  try {
+    const debt = await ScheduledDebt.findById(id);
+    if (!debt) {
+      return res.status(404).json({ error: 'Deuda programada no encontrada.' });
+    }
+    
+    // Authorization: User must be admin OR the owner of the debt
+    if (req.user.role !== 'admin' && debt.ownerCode !== req.user.code) {
+      return res.status(403).json({ error: 'Acceso denegado. No tiene permisos para eliminar esta deuda.' });
+    }
+    
+    await ScheduledDebt.findByIdAndDelete(id);
+    
+    // Log debt deletion in Audit Logs
+    const newLog = new AuditLog({
+      type: 'Deuda Programada',
+      action: 'Eliminación',
+      targetId: debt._id.toString(),
+      targetDetails: `Nombre: ${debt.nombre}, Monto: $${debt.monto}, Progreso: $${debt.progreso}, Propietario: ${debt.ownerName} (${debt.ownerCode})`,
+      deletedBy: req.user.username,
+      reason: reason
+    });
+    await newLog.save();
+    
+    res.json({ message: 'Deuda programada eliminada exitosamente.' });
+  } catch (err) {
+    console.error('Error deleting scheduled debt:', err);
+    res.status(500).json({ error: 'Error al eliminar la deuda programada.' });
+  }
+});
+
+// Register scheduled debt cuota/aporte
+app.post('/api/debts/:id/cuotas', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { monto, fecha } = req.body;
+  
+  if (monto === undefined || !fecha) {
+    return res.status(400).json({ error: 'El monto y la fecha del pago son obligatorios.' });
+  }
+  
+  if (isNaN(monto) || Number(monto) <= 0) {
+    return res.status(400).json({ error: 'El monto debe ser un número positivo.' });
+  }
+  
+  try {
+    const debt = await ScheduledDebt.findById(id);
+    if (!debt) {
+      return res.status(404).json({ error: 'Deuda programada no encontrada.' });
+    }
+    
+    // Authorization: User must be admin OR the owner of the debt
+    if (req.user.role !== 'admin' && debt.ownerCode !== req.user.code) {
+      return res.status(403).json({ error: 'Acceso denegado. No tiene permisos para registrar cuotas en esta deuda.' });
+    }
+    
+    const nuevoProgreso = debt.progreso + Number(monto);
+    debt.progreso = nuevoProgreso;
+    
+    if (nuevoProgreso >= debt.monto) {
+      debt.completed = true;
+    }
+    
+    const rem = debt.monto - nuevoProgreso;
+    const cuotasRestantes = rem > 0 ? Math.ceil(rem / debt.montoCuotas) : 0;
+    
+    // Currency format for COP helper inside backend response
+    const formatCurrencyCOP = (val) => {
+      return new Intl.NumberFormat('es-CO', {
+        style: 'currency',
+        currency: 'COP',
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 0
+      }).format(val);
+    };
+    
+    let leyenda = '';
+    if (debt.completed) {
+      leyenda = '¡Deuda pagada!';
+    } else {
+      leyenda = `Faltan aproximadamente ${cuotasRestantes} cuotas de ${formatCurrencyCOP(debt.montoCuotas)}`;
+    }
+    
+    debt.cuotas.push({
+      fecha,
+      monto: Number(monto),
+      leyenda
+    });
+    
+    await debt.save();
+    res.json(debt);
+  } catch (err) {
+    console.error('Error registering scheduled debt cuota:', err);
+    res.status(500).json({ error: 'Error al registrar el pago para la deuda.' });
   }
 });
 
