@@ -1025,7 +1025,7 @@ app.get('/api/debts', authenticateToken, async (req, res) => {
 app.post('/api/debts', authenticateToken, async (req, res) => {
   const { nombre, monto, tiempoCantidad, tiempoUnidad, periodo } = req.body;
   
-  if (!nombre || monto === undefined || tiempoCantidad === undefined || !tiempoUnidad || !periodo) {
+  if (!nombre || monto === undefined || tiempoCantidad === undefined || !tiempoUnidad) {
     return res.status(400).json({ error: 'Todos los campos son obligatorios.' });
   }
   
@@ -1041,13 +1041,18 @@ app.post('/api/debts', authenticateToken, async (req, res) => {
     return res.status(400).json({ error: 'Unidad de tiempo no válida. Debe ser meses, años, quincenas o semanas.' });
   }
   
+  const finalPeriodo = periodo || (
+    tiempoUnidad === 'semanas' ? 'semanal' :
+    tiempoUnidad === 'quincenas' ? 'quincenal' : 'mensual'
+  );
+
   const validPeriods = ['semanal', 'quincenal', 'mensual'];
-  if (!validPeriods.includes(periodo)) {
+  if (!validPeriods.includes(finalPeriodo)) {
     return res.status(400).json({ error: 'Período no válido. Debe ser semanal, quincenal o mensual.' });
   }
   
   try {
-    const { numeroCuotas, montoCuotas } = calculateGoalCuotas(Number(monto), Number(tiempoCantidad), tiempoUnidad, periodo);
+    const { numeroCuotas, montoCuotas } = calculateGoalCuotas(Number(monto), Number(tiempoCantidad), tiempoUnidad, finalPeriodo);
     
     // Find the user's name
     const ownerUser = await User.findOne({ code: req.user.code.toUpperCase() });
@@ -1058,7 +1063,7 @@ app.post('/api/debts', authenticateToken, async (req, res) => {
       monto: Number(monto),
       tiempoCantidad: Number(tiempoCantidad),
       tiempoUnidad,
-      periodo,
+      periodo: finalPeriodo,
       numeroCuotas,
       montoCuotas,
       ownerCode: req.user.code.toUpperCase(),
@@ -1078,7 +1083,7 @@ app.put('/api/debts/:id', authenticateToken, async (req, res) => {
   const { id } = req.params;
   const { nombre, monto, tiempoCantidad, tiempoUnidad, periodo } = req.body;
   
-  if (!nombre || monto === undefined || tiempoCantidad === undefined || !tiempoUnidad || !periodo) {
+  if (!nombre || monto === undefined || tiempoCantidad === undefined || !tiempoUnidad) {
     return res.status(400).json({ error: 'Todos los campos son obligatorios.' });
   }
   
@@ -1100,13 +1105,18 @@ app.put('/api/debts/:id', authenticateToken, async (req, res) => {
       return res.status(403).json({ error: 'Acceso denegado. No tiene permisos para editar esta deuda.' });
     }
     
-    const { numeroCuotas, montoCuotas } = calculateGoalCuotas(Number(monto), Number(tiempoCantidad), tiempoUnidad, periodo);
+    const finalPeriodo = periodo || (
+      tiempoUnidad === 'semanas' ? 'semanal' :
+      tiempoUnidad === 'quincenas' ? 'quincenal' : 'mensual'
+    );
+
+    const { numeroCuotas, montoCuotas } = calculateGoalCuotas(Number(monto), Number(tiempoCantidad), tiempoUnidad, finalPeriodo);
     
     debt.nombre = nombre;
     debt.monto = Number(monto);
     debt.tiempoCantidad = Number(tiempoCantidad);
     debt.tiempoUnidad = tiempoUnidad;
-    debt.periodo = periodo;
+    debt.periodo = finalPeriodo;
     debt.numeroCuotas = numeroCuotas;
     debt.montoCuotas = montoCuotas;
     
